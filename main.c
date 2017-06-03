@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/time.h>
-#include <poll.h>
 
 /*
   gcc main.c -o p; sudo chown root:root p; sudo chmod ugo+rxs p
@@ -49,6 +48,7 @@ int do_icmp(struct cmd_opts *opts)
     return errno;
   }
 
+  // create ipv4 header
   struct in_addr ip_aton;
   struct sockaddr_in ip_hdr;
   inet_aton(opts->ip, &ip_aton);
@@ -56,10 +56,15 @@ int do_icmp(struct cmd_opts *opts)
   ip_hdr.sin_family = AF_INET;
   ip_hdr.sin_addr = ip_aton;
 
+  struct timeval timeout = {opts->timeout, 0};
+  fd_set read_set;
+  memset(&read_set, 0, sizeof(read_set));
+  FD_SET(icmp_sock, &read_set);
   for (; opts->tries != 0; opts->tries--) {
     char icmp_pckt[opts->icmp_pckt_size];
     memset(&icmp_pckt, 0, sizeof(icmp_pckt));
 
+    // create icmp header
     struct icmphdr icmp_hdr;
     memset(&icmp_hdr, 0, sizeof(icmp_hdr));
     icmp_hdr.type = opts->icmp_type;
@@ -67,6 +72,7 @@ int do_icmp(struct cmd_opts *opts)
     icmp_hdr.un.echo.id = htons(opts->icmp_idi);
     icmp_hdr.checksum = 0;
 
+    // create icmp packet (header + payload)
     memcpy(icmp_pckt, &icmp_hdr, sizeof(icmp_hdr));
     memcpy(icmp_pckt + sizeof(icmp_hdr), opts->icmp_payl, strlen(opts->icmp_payl));
     int icmp_pckt_len = sizeof(icmp_hdr) + strlen(opts->icmp_payl);
@@ -74,6 +80,7 @@ int do_icmp(struct cmd_opts *opts)
     icmp_hdr.checksum = csum;
     memcpy(icmp_pckt, &icmp_hdr, sizeof(icmp_hdr));
 
+    // send packet over wire
     int rc = 0;
     rc = sendto(icmp_sock, icmp_pckt, icmp_pckt_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
     if (rc <= 0) {
@@ -81,12 +88,32 @@ int do_icmp(struct cmd_opts *opts)
       return errno;
     }
 
-    //rc = poll(icmp_pollfds, sizeof(icmp_pollfds), opts->timeout);
-    rc = ppoll(icmp_pollfds, sizeof(icmp_pollfds), NULL, NULL);
+    rc = select(icmp_sock + 1, &read_set, NULL, NULL, &timeout);
     if (rc == 0) {
       printf("error: timeout\n");
     } else if (rc == -1) {
       printf("error: failed to read icmp packet. errno:%d\n", errno);
+    }
+
+    char icmp_pckt_rcv[opts->icmp_pckt_size];
+    struct icmphdr icmp_hdr_rcv;
+    memset(icmp_pckt_rcv, 0, sizeof(icmp_pckt_rcv));
+    memset(&icmp_hdr_rcv, 0, sizeof(icmp_hdr_rcv));
+
+    rc = recvfrom(icmp_sock, icmp_pckt_rcv, sizeof(icmp_pckt_rcv), 0, NULL, NULL);
+    if (rc == 0) {
+      printf("error: icmp connection was reset\n");
+    } else if (rc == -1) {
+      printf("error: icmp connection was interrupted. errno:%d\n", errno);
+    } else if (rc < (int)sizeof(icmp_hdr_rcv)) {
+      printf("error: got packet shorter than header\n");
+    } else {
+      memcpy(&icmp_hdr_rcv, icmp_pckt_rcv, sizeof(icmp_hdr_rcv));
+      if (icmp_hdr_rcv.type == ICMP_ECHOREPLY) {
+        printf("recv seq %d\n", icmp_hdr_rcv.un.echo.sequence);
+      } else {
+        printf("recv icmp packet with wrong type : %d\n", icmp_hdr_rcv.type);
+      }
     }
     sleep(opts->interval);
   }
@@ -105,105 +132,10 @@ int main(int argc, char **argv)
   opts.icmp_idi = 1;
   opts.icmp_payl = "....";
   opts.tries = 3;
-  opts.interval = 0;
-  opts.timeout = 0.1;
+  opts.interval = 1;
+  opts.timeout = 1;
 
   do_icmp(&opts);
 
   return errno;
-}
-
-
-int main0(int argc, char **argv) 
-{
-  struct icmphdr icmp_header;
-  struct sockaddr_in address;
-  struct in_addr addr_dst;
-
-  if (inet_aton(argv[1], &addr_dst) == 0) {
-    printf("error: invalid ip address\n");
-    return -1;
-  }
-
-  int icmp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
-  if (icmp_sock < 0) {
-    printf("error: failed to open socket. errno: %d\n", errno);
-    return errno;
-  }
-
-  for(;;) {
-  memset(&address, 0, sizeof address);
-  address.sin_family = AF_INET;
-  address.sin_addr = addr_dst;
-
-  memset(&icmp_header, 0, sizeof icmp_header);
-  icmp_header.type = ICMP_ECHO;
-  // configurable
-  unsigned char packet[1024];
-  // configurable
-  struct timeval timeout = {10, 0};
-  fd_set read_set;
-  socklen_t icmp_sock_len;
-  struct icmphdr icmp_header_rcv;
-  // configurable 
-  uint16_t icmp_sequence = 1;
-  struct timeval time_snt, time_rcv;
-  long rttime = 0;
-  // configurable
-  char payload[] = "........................................................";
-  size_t payload_len = strlen(payload);
-
-
-  icmp_header.un.echo.sequence = htons(icmp_sequence++);
-  memcpy(packet, &icmp_header, sizeof icmp_header);
-  memcpy(packet + sizeof icmp_header, payload, payload_len);
-  int was_sent;
-  gettimeofday(&time_snt, NULL);
-  was_sent = sendto(icmp_sock, packet, sizeof icmp_header + payload_len, 0, 
-                    (struct sockaddr*)&address, sizeof address);
-  if (was_sent <= 0) {
-    printf("error: failed to sent icmp packet. errno: %d\n", errno);
-    return errno;
-  }
-
-  memset(&read_set, 0, sizeof read_set);
-  FD_SET(icmp_sock, &read_set);
-
-  was_sent = select(icmp_sock + 1, &read_set, NULL, NULL, &timeout);
-  if (was_sent == 0) {
-    printf("error: icmp request timed out\n");
-    return -1;
-  } else if (was_sent < 0) {
-    printf("error: failed to read from socket. errno: %d\n", errno);
-    return errno;
-  }
-
-  icmp_sock_len = 0;
-  was_sent = recvfrom(icmp_sock, packet, sizeof packet, 0, NULL, &icmp_sock_len);
-  gettimeofday(&time_rcv, NULL);
-  rttime = (long)(time_rcv.tv_usec - time_snt.tv_usec) / 1000 + (long)(time_rcv.tv_sec - time_snt.tv_sec);
-  if (rttime < 0)
-    rttime = rttime + 1000;
-  if (was_sent <= 0) {
-    printf("error: failed to receive. errno: %d\n", errno);
-    return errno;
-  } else if (was_sent < sizeof icmp_header_rcv) {
-    printf("error: got short icmp header\n");
-    return -1;
-  }
-
-  memcpy(&icmp_header_rcv, packet, sizeof icmp_header_rcv);
-  if (icmp_header_rcv.type == ICMP_ECHOREPLY) {
-    printf("icmp reply: time=%dms, id=0x%x, seq=0x%x\n",
-           rttime,
-           icmp_header_rcv.un.echo.id,
-           icmp_header_rcv.un.echo.sequence);
-  } else {
-    printf("error: wrong icmp reply type: 0x%x\n", icmp_header_rcv.type);
-  }
-  // configurable
-  sleep(1);
-  }
-
-  return 0;
 }
