@@ -6,9 +6,14 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/time.h>
+#include <stdlib.h>
 
 /*
   gcc main.c -o p; sudo chown root:root p; sudo chmod ugo+rxs p
+
+  - server uptime by tsval
+  - account information for statistic
+  - 
 */
 
 struct cmd_opts {
@@ -23,6 +28,8 @@ struct cmd_opts {
   int         timeout;
 };
 
+struct accounting {
+};
 
 uint16_t icmp_csum(uint16_t *hdr, uint32_t len)
 {
@@ -60,6 +67,7 @@ int do_icmp(struct cmd_opts *opts)
   fd_set read_set;
   memset(&read_set, 0, sizeof(read_set));
   FD_SET(icmp_sock, &read_set);
+
   for (; opts->tries != 0; opts->tries--) {
     char icmp_pckt[opts->icmp_pckt_size];
     memset(&icmp_pckt, 0, sizeof(icmp_pckt));
@@ -89,10 +97,9 @@ int do_icmp(struct cmd_opts *opts)
     }
 
     rc = select(icmp_sock + 1, &read_set, NULL, NULL, &timeout);
-    if (rc == 0) {
-      printf("error: timeout\n");
-    } else if (rc == -1) {
+    if (rc == -1) {
       printf("error: failed to read icmp packet. errno:%d\n", errno);
+      return errno;
     }
 
     char icmp_pckt_rcv[opts->icmp_pckt_size];
@@ -103,17 +110,21 @@ int do_icmp(struct cmd_opts *opts)
     rc = recvfrom(icmp_sock, icmp_pckt_rcv, sizeof(icmp_pckt_rcv), 0, NULL, NULL);
     if (rc == 0) {
       printf("error: icmp connection was reset\n");
+      return -1;
     } else if (rc == -1) {
       printf("error: icmp connection was interrupted. errno:%d\n", errno);
+      return errno;
     } else if (rc < (int)sizeof(icmp_hdr_rcv)) {
       printf("error: got packet shorter than header\n");
+      return errno;
+    }
+
+    // since SOCK_RAW is used - icmp_pckt_rcv will hold 20 bytes of ipv4 header
+    memcpy(&icmp_hdr_rcv, icmp_pckt_rcv + 20, sizeof(icmp_hdr_rcv));
+    if (icmp_hdr_rcv.type == ICMP_ECHOREPLY) {
+      printf("recv seq %d\n", ntohs(icmp_hdr_rcv.un.echo.sequence));
     } else {
-      memcpy(&icmp_hdr_rcv, icmp_pckt_rcv, sizeof(icmp_hdr_rcv));
-      if (icmp_hdr_rcv.type == ICMP_ECHOREPLY) {
-        printf("recv seq %d\n", icmp_hdr_rcv.un.echo.sequence);
-      } else {
-        printf("recv icmp packet with wrong type : %d\n", icmp_hdr_rcv.type);
-      }
+      printf("recv icmp packet with wrong type : %d\n", icmp_hdr_rcv.type);
     }
     sleep(opts->interval);
   }
@@ -129,13 +140,13 @@ int main(int argc, char **argv)
   opts.icmp_type = ICMP_ECHO;
   opts.icmp_pckt_size = 4096;
   opts.icmp_sequence = 12;
-  opts.icmp_idi = 1;
+  opts.icmp_idi = getpid();
   opts.icmp_payl = "....";
-  opts.tries = 3;
-  opts.interval = 1;
+  opts.tries = atoi(argv[2]);
+  opts.interval = 0;
   opts.timeout = 1;
 
-  do_icmp(&opts);
+  int rc = do_icmp(&opts);
 
-  return errno;
+  return rc;
 }
