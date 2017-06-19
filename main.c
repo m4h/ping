@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <stdlib.h>
+#include <time.h>
 
 /*
   gcc main.c -o p; sudo chown root:root p; sudo chmod ugo+rxs p
@@ -98,6 +99,9 @@ int do_icmp(struct cmd_opts *opts)
     icmp_hdr.checksum = csum;
     memcpy(icmp_pckt, &icmp_hdr, sizeof(icmp_hdr));
 
+    struct timespec tstart, tend;
+    double rtt;
+    clock_gettime(CLOCK_REALTIME, &tstart);
     // send packet over wire
     rc = sendto(icmp_sock, icmp_pckt, icmp_pckt_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
     if (rc <= 0) {
@@ -105,18 +109,12 @@ int do_icmp(struct cmd_opts *opts)
       return errno;
     }
 
-    struct timeval tstart, tend;
-    double rtt;
-    gettimeofday(&tstart, NULL);
     // wait for response
     rc = select(icmp_sock + 1, &read_set, NULL, NULL, &timeout);
     if (rc == -1) {
       printf("error: failed to read icmp packet. errno:%d\n", errno);
       return errno;
     }
-    gettimeofday(&tend, NULL);
-    rtt = (tend.tv_sec - tstart.tv_sec) * 1000.0;
-    rtt += (tend.tv_usec - tstart.tv_usec) / 1000.0;
 
     // prepare response icmp packet and header
     char icmp_pckt_rcv[opts->icmp_pckt_size];
@@ -136,6 +134,9 @@ int do_icmp(struct cmd_opts *opts)
       printf("error: got packet shorter than header\n");
       return errno;
     }
+    clock_gettime(CLOCK_REALTIME, &tend);
+    rtt = (tend.tv_sec - tstart.tv_sec) * 1000.0;
+    rtt += (tend.tv_nsec - tstart.tv_nsec) / 1000000.0;
 
     // since SOCK_RAW is used - icmp_pckt_rcv will hold 20 bytes of ipv4 header
     memcpy(&icmp_hdr_rcv, icmp_pckt_rcv + 20, sizeof(icmp_hdr_rcv));
