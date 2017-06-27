@@ -61,10 +61,12 @@ uint16_t icmp_csum(uint16_t *hdr, uint32_t len)
 void do_display_graph(struct accounting *s, struct cmd_opts *o, double rtt)
 {
   if (s->packets == 1) {
-    printf("--- rtt based graph: '!' is more than %.fms; '-' is less than %.fms ---\n", o->max_rtt, o->min_rtt);
+    printf("--- rtt based graph: '!' is more than %.fms; '-' is less than %.fms; 't' is timeout (%ds) ---\n", o->max_rtt, o->min_rtt, o->timeout);
   }
   //FIXME: account max_rtt and min_rtt
-  if (rtt > o->max_rtt) {
+  if (rtt == -1) {
+    printf("t");
+  } else if (rtt > o->max_rtt) {
     printf("!");
   } else if (rtt < o->min_rtt) {
     printf("-");
@@ -73,9 +75,9 @@ void do_display_graph(struct accounting *s, struct cmd_opts *o, double rtt)
   }
   // FIXME: display timeouts as well
   fflush(stdout);
-  // jump to next line when - 80 chars were displayed or we displayed char for last packet
-  if (((s->packets != 0) && (s->packets % 80) == 0) || (o->packets == 1)) {
-    printf("\n");
+  // jump to next line when - 60 chars were displayed or we displayed char for last packet
+  if (((s->packets != 0) && (s->packets % 60) == 0) || (o->packets == 1)) {
+    printf(" - line statistic\n");
   }
 }
 
@@ -104,9 +106,9 @@ int do_icmp(struct cmd_opts *opts)
   }
   // set socket timeout and select fds
   struct timeval timeout = {opts->timeout, 0};
-  fd_set read_set;
-  memset(&read_set, 0, sizeof(read_set));
-  FD_SET(sockfd, &read_set);
+  fd_set readfd;
+  FD_ZERO(&readfd);
+  FD_SET(sockfd, &readfd);
 
   // variables used to compute and store rtt (round trip time) value
   struct timespec tstart, tend;
@@ -168,9 +170,9 @@ int do_icmp(struct cmd_opts *opts)
       printf("error: failed to send icmp packet. errno: %d\n", errno);
       return errno;
     }
-
     // wait for response
-    rc = select(sockfd + 1, &read_set, NULL, NULL, &timeout);
+    timeout.tv_sec = opts->timeout;
+    rc = select(sockfd + 1, &readfd, NULL, NULL, &timeout);
     if (rc == -1) {
       printf("error: failed to read icmp packet. errno:%d\n", errno);
       return errno;
@@ -178,13 +180,27 @@ int do_icmp(struct cmd_opts *opts)
 
     // read response from socket and write to ppckt buffer
     memset(ppckt, 0, opts->icmp_len);
-    rc = recvfrom(sockfd, ppckt, opts->icmp_len, 0, NULL, NULL);
+    rc = recvfrom(sockfd, ppckt, opts->icmp_len, MSG_DONTWAIT, NULL, NULL);
     if (rc == 0) {
       printf("error: icmp connection was reset\n");
       return -1;
     } else if (rc == -1) {
-      printf("error: icmp connection was interrupted. errno:%d\n", errno);
-      return errno;
+      // EAGAIN indicate that select(3) hit timeout and recvfrom(3) don't have data to read
+      // FIXME: ugly stuff
+      if (errno == EAGAIN) {
+        // reset readfd and skip the packet
+        FD_ZERO(&readfd);
+        FD_SET(sockfd, &readfd);
+        free(phdr);
+        free(ppckt);
+        // FIXME: packets++ is not correct as after calculation done on these packets. need to introduce chars variable
+        stats.packets++;
+        do_display_graph(&stats, opts, -1);
+        continue;
+      } else {
+        printf("error: icmp connection was interrupted. errno:%d\n", errno);
+        return errno;
+      }
     } else if (rc < (int)sizeof(hdr_len)) {
       printf("error: got packet shorter than header\n");
       return errno;
@@ -218,9 +234,11 @@ int do_icmp(struct cmd_opts *opts)
 
     free(phdr);
     free(ppckt);
+    // FIXME: convert to nanosleep
     sleep(opts->interval);
   }
   do_display_summary(&stats);
+  close(sockfd);
   return 0;
 }
 
@@ -236,11 +254,11 @@ int main(int argc, char **argv)
   opts.icmp_idi = getpid();
   opts.icmp_payload = "....";
   opts.packets = atoi(argv[2]);
-  opts.interval = 0.5;
+  opts.interval = 1;
   opts.timeout = 1;
   opts.ttl = 28;
   opts.max_rtt = 100;
-  opts.min_rtt = 75;
+  opts.min_rtt = 1;
 
   int rc = do_icmp(&opts);
 
