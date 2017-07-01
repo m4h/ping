@@ -39,22 +39,34 @@ struct accounting {
   float max_ms;
   float min_ms;
   float tot_ms;
-  long packets;
+  long  packets;
 };
 
-uint16_t icmp_csum(uint16_t *hdr, uint32_t len)
+uint16_t icmp_csum(uint16_t *h, uint32_t l)
 {
   unsigned long csum = 0;
-  while (len > 1) {
-    csum += *hdr++;
-    len -= sizeof(unsigned short);
+  while (l > 1) {
+    csum += *h++;
+    l -= sizeof(unsigned short);
   }
-  if (len) {
-    csum += *(unsigned char*)hdr;
+  if (l) {
+    csum += *(unsigned char*)h;
   }
   csum = (csum >> 16) + (csum & 0xffff);
   csum += (csum >> 16);
   return (uint16_t)(~csum);
+}
+
+
+void do_display_errno(int e)
+{
+  switch(e) {
+    case 101:
+      printf("errno %d: network is unreachable\n", e);
+      break;
+    default:
+      printf("errno: %d\n", e);
+  }
 }
 
 
@@ -73,7 +85,6 @@ void do_display_graph(struct accounting *s, struct cmd_opts *o, double rtt)
   } else {
     printf(".");
   }
-  // FIXME: display timeouts as well
   fflush(stdout);
   // jump to next line when - 60 chars were displayed or we displayed char for last packet
   if (((s->packets != 0) && (s->packets % 60) == 0) || (o->packets == 1)) {
@@ -88,6 +99,10 @@ void do_display_summary(struct accounting *s)
   printf("min rtt=%.1fms; max rtt=%.1fms; avg rtt=%.1fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
 }
 
+int do_send(struct cmd_opts *o)
+{
+
+}
 
 int do_icmp(struct cmd_opts *opts)
 {
@@ -107,8 +122,6 @@ int do_icmp(struct cmd_opts *opts)
   // set socket timeout and select fds
   struct timeval timeout = {opts->timeout, 0};
   fd_set readfd;
-  FD_ZERO(&readfd);
-  FD_SET(sockfd, &readfd);
 
   // variables used to compute and store rtt (round trip time) value
   struct timespec tstart, tend;
@@ -132,6 +145,8 @@ int do_icmp(struct cmd_opts *opts)
   ip_hdr.sin_addr = ip_aton;
 
   for (; opts->packets != 0; opts->packets--) {
+    FD_ZERO(&readfd);
+    FD_SET(sockfd, &readfd);
     // create icmp header
     // phdr is used as icmp header buffer (sent and recv)
     struct icmphdr *phdr = malloc(hdr_len);
@@ -167,8 +182,14 @@ int do_icmp(struct cmd_opts *opts)
     clock_gettime(CLOCK_REALTIME, &tstart);
     rc = sendto(sockfd, ppckt, pckt_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
     if (rc <= 0) {
-      printf("error: failed to send icmp packet. errno: %d\n", errno);
-      return errno;
+      // FIXME: need mechanism to display relevant errno and reset loop with a clean up and counters
+      if (errno) {
+        do_display_errno(errno);
+      } else {
+        printf("error: failed to send icmp packet\n");
+      }
+      sleep(opts->interval);
+      continue;
     }
     // wait for response
     timeout.tv_sec = opts->timeout;
@@ -189,8 +210,6 @@ int do_icmp(struct cmd_opts *opts)
       // FIXME: ugly stuff
       if (errno == EAGAIN) {
         // reset readfd and skip the packet
-        FD_ZERO(&readfd);
-        FD_SET(sockfd, &readfd);
         free(phdr);
         free(ppckt);
         // FIXME: packets++ is not correct as after calculation done on these packets. need to introduce chars variable
@@ -232,8 +251,14 @@ int do_icmp(struct cmd_opts *opts)
       printf("recv: icmp packet with wrong type : %d\n", phdr->type);
     }
 
-    free(phdr);
-    free(ppckt);
+    if (phdr != NULL) {
+      free(phdr);
+      phdr = NULL;
+    }
+    if (ppckt != NULL) {
+      free(ppckt);
+      ppckt = NULL;
+    }
     // FIXME: convert to nanosleep
     sleep(opts->interval);
   }
