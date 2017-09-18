@@ -119,7 +119,7 @@ int do_open_socket(struct cmd_opts *o)
 
 // FIXME: pass buffer to hold icmp packet, after copy from internal buffer to arg buffer and release internal buffers
 // the idea - each scope manage his own buffers and there are no pointers travel between functions
-struct icmphdr* do_send_icmp(int s, struct cmd_opts *o/*, void *p*/)
+int do_send_icmp(int s, struct cmd_opts *o, void *p)
 {
   // create ipv4 header
   struct in_addr ip_aton;
@@ -136,7 +136,7 @@ struct icmphdr* do_send_icmp(int s, struct cmd_opts *o/*, void *p*/)
   struct icmphdr *phdr = malloc(hlen);
   if (phdr == NULL) {
     printf("error: failed to allocate %d bytes. errno: %d\n", hlen, errno);
-    return NULL;
+    return -1;
   }
   memset(phdr, 0, hlen);
   phdr->type = o->icmp_type;
@@ -149,7 +149,7 @@ struct icmphdr* do_send_icmp(int s, struct cmd_opts *o/*, void *p*/)
   char *ppckt = malloc(o->icmp_len);
   if (ppckt == NULL) {
     printf("error: failed to allocate %d bytes. errno: %d\n", o->icmp_len, errno);
-    return NULL;
+    return -1;
   }
   memset(ppckt, 0, o->icmp_len);
   // copy icmp header to packet buffer
@@ -172,19 +172,21 @@ struct icmphdr* do_send_icmp(int s, struct cmd_opts *o/*, void *p*/)
   rc = select(s + 1, &rfd, NULL, NULL, &tv);
   if (rc == -1) {
     printf("error: failed to read icmp packet. errno:%d\n", errno);
-    return NULL;
+    return -1;
   }
   // read response from socket and write to ppckt buffer
   memset(ppckt, 0, o->icmp_len);
   rc = recvfrom(s, ppckt, o->icmp_len, MSG_DONTWAIT, NULL, NULL);
-  
+  memcpy(p, ppckt, o->icmp_len);
+  /*
   // since SOCK_RAW is used - ppckt will hold 20 bytes of ipv4 header
   memset(phdr, 0, hlen);
   memcpy(phdr, ppckt + 20, hlen);
+  */
   if (ppckt != NULL) {
     free(ppckt);
   }
-  return phdr;
+  return rc;
 }
 
 
@@ -203,68 +205,15 @@ int do_icmp(struct cmd_opts *opts)
   stats.packets = 0;
 
   for (; opts->packets != 0; opts->packets--) {
-    /*
-    FD_ZERO(&readfd);
-    FD_SET(sockfd, &readfd);
-    // create icmp header
-    // phdr is used as icmp header buffer (sent and recv)
-    struct icmphdr *phdr = malloc(hdr_len);
-    if (phdr == NULL) {
-      printf("error: failed to allocate %d bytes. errno: %d\n", hdr_len, errno);
-      return errno;
-    }
-    memset(phdr, 0, sizeof(hdr_len));
-    phdr->type = opts->icmp_type;
-    phdr->un.echo.sequence = htons(opts->icmp_sequence++);
-    phdr->un.echo.id = htons(opts->icmp_idi);
-    phdr->checksum = 0;
+    // FIXME
+    int hlen = sizeof(struct icmphdr);
+    struct icmphdr *phdr = malloc(hlen);
 
-    // create icmp packet (header + payload)
-    // ppckt is used as icmp packet buffer (sent and recv)
-    char *ppckt = malloc(opts->icmp_len);
-    if (ppckt == NULL) {
-      printf("error: failed to allocate %d bytes. errno: %d\n", opts->icmp_len, errno);
-      return errno;
-    }
-    memset(ppckt, 0, opts->icmp_len);
-    // copy icmp header to packet buffer
-    memcpy(ppckt, phdr, sizeof(hdr_len));
-    // copy icmp payload to packet buffer
-    memcpy(ppckt + sizeof(hdr_len), opts->icmp_payload, strlen(opts->icmp_payload));
-    int pckt_len = sizeof(hdr_len) + strlen(opts->icmp_payload);
-    uint16_t csum = icmp_csum((uint16_t*)ppckt, pckt_len);
-    phdr->checksum = csum;
-    // copy icmp header with correct checksum
-    memcpy(ppckt, phdr, sizeof(hdr_len));
-
-    // send packet over wire
+    char *buf = malloc(sizeof(char) * opts->icmp_len);
+    memset(buf, 0, opts->icmp_len);
     clock_gettime(CLOCK_REALTIME, &tstart);
-    int rc = sendto(sockfd, ppckt, pckt_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
-    if (rc <= 0) {
-      // FIXME: need mechanism to display relevant errno and reset loop with a clean up and counters
-      if (errno) {
-        do_display_errno(errno);
-      } else {
-        printf("error: failed to send icmp packet\n");
-      }
-      sleep(opts->interval);
-      continue;
-    }
-    // wait for response
-    timeout.tv_sec = opts->timeout;
-    rc = select(sockfd + 1, &readfd, NULL, NULL, &timeout);
-    if (rc == -1) {
-      printf("error: failed to read icmp packet. errno:%d\n", errno);
-      return errno;
-    }
-
-    // read response from socket and write to ppckt buffer
-    memset(ppckt, 0, opts->icmp_len);
-    rc = recvfrom(sockfd, ppckt, opts->icmp_len, MSG_DONTWAIT, NULL, NULL);
-    */
-    int rc = 234;
-    clock_gettime(CLOCK_REALTIME, &tstart);
-    struct icmphdr *phdr = do_send_icmp(sockfd, opts);
+    int rc = do_send_icmp(sockfd, opts, buf);
+    
     if (rc == 0) {
       printf("error: icmp connection was reset\n");
       return -1;
@@ -285,24 +234,21 @@ int do_icmp(struct cmd_opts *opts)
         printf("error: icmp connection was interrupted. errno:%d\n", errno);
         return errno;
       }
-    } /* else if (rc < (int)sizeof(hdr_len)) {
+    } else if (rc < (int)sizeof(hlen)) {
       printf("error: got packet shorter than header\n");
       return errno;
-    }*/
+    }
     clock_gettime(CLOCK_REALTIME, &tend);
     // rtt is stored in ms - hence we need to convert tv_sec and tv_nsec to ms
     rtt = (tend.tv_sec - tstart.tv_sec) * 1000.0;
     rtt += (tend.tv_nsec - tstart.tv_nsec) / 1000000.0;
 
-    /*
-    // since SOCK_RAW is used - ppckt will hold 20 bytes of ipv4 header
-    memset(phdr, 0, sizeof(hdr_len));
-    memcpy(phdr, ppckt + 20, sizeof(hdr_len));
+    memset(phdr, 0, hlen);
+    memcpy(phdr, buf + 20, hlen);
     memset(&ttl, 0, sizeof(unsigned char));
     // FIXME: rewrite ugly hack with 9th byte offset - get ttl from ip header (ttl is 9th byte)
-    memcpy(&ttl, ppckt + 8, sizeof(unsigned char));
-    */
-    ttl = 3;
+    memcpy(&ttl, buf + 8, sizeof(unsigned char));
+
     // account statistic
     stats.packets++;
     stats.tot_ms += rtt;
@@ -323,12 +269,10 @@ int do_icmp(struct cmd_opts *opts)
       free(phdr);
       phdr = NULL;
     }
-    /*
-    if (ppckt != NULL) {
-      free(ppckt);
-      ppckt = NULL;
+    if (buf != NULL) {
+      free(buf);
+      buf = NULL;
     }
-    */
     // FIXME: convert to nanosleep
     sleep(opts->interval);
   }
