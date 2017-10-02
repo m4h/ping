@@ -8,6 +8,7 @@
 #include <sys/time.h>
 #include <stdlib.h>
 #include <time.h>
+#include <argp.h>
 
 /*
  * why need to use this:
@@ -32,12 +33,22 @@
   - server uptime by tsval
   - account information for statistic
   - visual display of packets
+  - display info by icmp->code (https://gist.github.com/kbaribeau/4495181)
+
 
   FIXME: timeout issue (actually timeout doesn't work as expected)
 */
+const char *argp_program_version = "0.1";
+const char *argp_program_bug_address = "<artyom.klimenko@gmail.com>";
+static char args_doc[] = "DESTINATION";
+static struct argp_option options[] = {
+  {"count",   'c', "COUNT",   0, "packets count", 0},
+  {0}
+};
 
-struct options {
-  const char    *ip;
+struct arguments
+{
+  char          *ip;            // ip address
   uint16_t      icmp_type;
   uint32_t      icmp_idi;
   uint32_t      icmp_sequence;
@@ -51,6 +62,26 @@ struct options {
   double        max_rtt;
   double        min_rtt;
 };
+
+static error_t parse_opt(int key, char *arg, struct argp_state *state)
+{
+  struct arguments *arguments = state->input;
+  switch(key) {
+    case 'c':
+      arguments->packets = atoi(arg);
+      break;
+    case ARGP_KEY_ARG:
+      arguments->ip = arg;
+      break;
+    case ARGP_KEY_NO_ARGS:
+      argp_usage(state);
+    default:
+      return ARGP_ERR_UNKNOWN;
+  }
+  return 0;
+}
+
+static struct argp argp = { options, parse_opt, args_doc, 0, 0, 0, 0};
 
 struct accounting {
   float max_ms;
@@ -95,7 +126,7 @@ void do_free(void *ptr)
   }
 }
 
-void do_display_graph(struct accounting *s, struct options *o, double rtt)
+void do_display_graph(struct accounting *s, struct arguments *o, double rtt)
 {
   if (s->packets == 1) {
     printf("--- rtt based graph: '!' is more than %.fms; '-' is less than %.fms; 't' is timeout (%ds) ---\n", o->max_rtt, o->min_rtt, o->timeout);
@@ -120,12 +151,13 @@ void do_display_graph(struct accounting *s, struct options *o, double rtt)
 
 void do_display_summary(struct accounting *s)
 {
+  //FIXME: display statistics on CTRL+C
   printf("--- statistics ---\n");
   printf("min rtt=%.1fms; max rtt=%.1fms; avg rtt=%.1fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
 }
 
 
-int do_open_socket(struct options *options)
+int do_open_socket(struct arguments *options)
 {
   int socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
   if (socket_fd < 0) {
@@ -156,15 +188,15 @@ double do_timespec_delta(struct timespec s, struct timespec e)
 }
 
 
-int do_send_icmp(int socket_fd, struct options *options, void *packet)
+int do_send_icmp(int socket_fd, struct arguments *options, void *packet)
 {
   // create ipv4 header
-  struct sockaddr_in ip_header;
-  struct in_addr ip_addrr;
-  inet_aton(options->ip, &ip_addrr);
-  memset(&ip_header, 0, sizeof(ip_header));
-  ip_header.sin_family = AF_INET;
-  ip_header.sin_addr = ip_addrr;
+  struct sockaddr_in ip_hdr;
+  struct in_addr ip_addr;
+  inet_aton(options->ip, &ip_addr);
+  memset(&ip_hdr, 0, sizeof(ip_hdr));
+  ip_hdr.sin_family = AF_INET;
+  ip_hdr.sin_addr = ip_addr;
 
   // create icmp header
   int icmp_hdr_len = sizeof(struct icmphdr);
@@ -195,7 +227,7 @@ int do_send_icmp(int socket_fd, struct options *options, void *packet)
   memcpy(packet_ptr, icmp_hdr_ptr, icmp_hdr_len);
   
   // send packet over wire
-  sendto(socket_fd, packet_ptr, packet_len, 0, (struct sockaddr*)&ip_header, sizeof(ip_header));
+  sendto(socket_fd, packet_ptr, packet_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
   // wait for response
   struct timeval timeout = {options->timeout, 0};
   fd_set read_set;
@@ -216,7 +248,7 @@ int do_send_icmp(int socket_fd, struct options *options, void *packet)
 }
 
 
-int do_main_loop(struct options *options)
+int do_main_loop(struct arguments *options)
 {
   double rtt;
   // variables used to compute and store rtt (round trip time) value
@@ -295,21 +327,22 @@ int do_main_loop(struct options *options)
 
 int main(int argc, char **argv)
 {
-  struct options opts;
-  opts.ip = argv[1];
-  opts.icmp_type = ICMP_ECHO;
-  opts.icmp_len = 4096;
-  opts.icmp_sequence = 12;
+  struct arguments arguments;
+  arguments.icmp_type = ICMP_ECHO;
+  arguments.icmp_len = 4096;
+  arguments.icmp_sequence = 12;
   // FIXME: rename icmp_idi to something more intuitive
-  opts.icmp_idi = getpid();
-  opts.icmp_payload = "....";
-  opts.packets = atoi(argv[2]);
-  opts.interval = 1;
-  opts.timeout = 1;
-  opts.ttl = 28;
-  opts.max_rtt = 100;
-  opts.min_rtt = 1;
+  arguments.icmp_idi = getpid();
+  arguments.icmp_payload = "....";
+  arguments.packets = 10;
+  arguments.interval = 1;
+  arguments.timeout = 1;
+  arguments.ttl = 28;
+  arguments.max_rtt = 100;
+  arguments.min_rtt = 1;
 
-  int rc = do_main_loop(&opts);
+  argp_parse(&argp, argc, argv, 0, 0, &arguments);
+
+  int rc = do_main_loop(&arguments);
   return rc;
 }
