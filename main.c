@@ -28,24 +28,42 @@
 */
 
 /*
-  gcc main.c -o p; sudo chown root:root p; sudo chmod ugo+rxs p
+  gcc main.c -o ping; sudo chown root:root ping; sudo chmod ugo+rxs ping
 
   - server uptime by tsval
   - account information for statistic
   - visual display of packets
   - display info by icmp->code (https://gist.github.com/kbaribeau/4495181)
 
-
-  FIXME: timeout issue (actually timeout doesn't work as expected)
+  FIXME: 
+    - timeout issue (actually timeout doesn't work as expected)
+    - max rtt sometime have too high value
+    - add default arguments
+    - break down ICMP responses, so not everything will be covered by 'wrong packet'
+  TODO:
+    - convert errno from numeric to word values
+    - show ICMP_TYPE as word and numeric values
+    - bring (kore) a webserver and when client connects render a webgraph in live?
+    - DNS to IP; check IP
 */
-const char *argp_program_version = "0.1";
-const char *argp_program_bug_address = "<artyom.klimenko@gmail.com>";
+
+#define ARGS_DEFAULT_PACKETS 10
+#define ARGS_DEFAULT_TIMEOUT 1
+#define ARGS_DEFAULT_INTERVAL 1
+#define ARGS_DEFAULT_TTL 32
+
+const char *argp_program_version = "0.0.5";
+const char *argp_program_bug_address = "<dev@null>";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
-  {"count",   'c', "COUNT",   0, "packets count", 0},
+  {"count",    'c', "NUM",  0, "packets to send (default: 10)", 0},
+  {"interval", 'i', "SECS", 0, "time to wait between packets (default: 1)", 0},
+  {"timeout",  't', "SECS", 0, "time to wait for socket to be ready (select) (default: 1)", 0},
+  {"ttl",      'T', "NUM",  0, "packet ttl (default: 32)", 0},
   {0}
 };
 
+char *IP;
 struct arguments
 {
   char          *ip;            // ip address
@@ -70,11 +88,21 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
     case 'c':
       arguments->packets = atoi(arg);
       break;
+    case 'i':
+      arguments->interval = atoi(arg);
+      break;
+    case 't':
+      arguments->timeout = atoi(arg);
+      break;
+    case 'T':
+      arguments->ttl = atoi(arg);
+      break;
     case ARGP_KEY_ARG:
       arguments->ip = arg;
       break;
     case ARGP_KEY_NO_ARGS:
       argp_usage(state);
+      break;
     default:
       return ARGP_ERR_UNKNOWN;
   }
@@ -90,6 +118,115 @@ struct accounting {
   long  packets;
 };
 
+const char *icmp_type_to_string(int type)
+{
+  /*
+   * convert appropriate icmphdr->type to a string
+   * @type  - icmphdr->type
+   * return - string representation of icmphdr->type
+   *
+   */
+  switch(type) {
+    case ICMP_ECHOREPLY:
+      return "echoreply";
+    case ICMP_DEST_UNREACH:
+      return "dest_unreach";
+    case ICMP_SOURCE_QUENCH:
+      return "source_quench";
+    case ICMP_REDIRECT:
+      return "redirect";
+    case ICMP_ECHO:
+      return "echo";
+    case ICMP_TIME_EXCEEDED:
+      return "time_exceeded";
+    case ICMP_PARAMETERPROB:
+      return "parameterprob";
+    case ICMP_TIMESTAMP: 
+      return "timestamp";
+    case ICMP_TIMESTAMPREPLY:
+      return "timestampreply";
+    case ICMP_INFO_REQUEST:
+      return "info_request";
+    case ICMP_INFO_REPLY:
+      return "info_reply";
+    case ICMP_ADDRESS:
+      return "address";
+    case ICMP_ADDRESSREPLY:
+      return "addressreply";
+  }
+  return "null";
+}
+
+const char *icmp_code_to_string(int type, int code)
+{
+  /*
+   * convert appropriate icmphdr->code to a string;
+   * @type  - icmphdr->type
+   * @code  - icmphdr->code
+   * return - string representation of icmp code
+   *
+   */
+  switch(type) {
+    case ICMP_DEST_UNREACH:
+      switch(code) {
+        case ICMP_NET_UNREACH:
+          return "net_unreach";
+        case ICMP_HOST_UNREACH:
+          return "host_unreach";
+        case ICMP_PROT_UNREACH:
+          return "prot_unreach";
+        case ICMP_PORT_UNREACH:
+          return "port_unreach";
+        case ICMP_FRAG_NEEDED:
+          return "frag_needed";
+        case ICMP_SR_FAILED:
+          return "sr_failed:";
+        case ICMP_NET_UNKNOWN:
+          return "net_unknown";
+        case ICMP_HOST_UNKNOWN:
+          return "host_unknown:";
+        case ICMP_HOST_ISOLATED:
+          return "host_isolated";
+        case ICMP_NET_ANO:
+          return "net_ano";
+        case ICMP_HOST_ANO:
+          return "host_ano";
+        case ICMP_NET_UNR_TOS:
+          return "net_unr_tos:";
+        case ICMP_HOST_UNR_TOS:
+          return "host_unr_tos";
+        case ICMP_PKT_FILTERED:
+          return "pkt_filtered";
+        case ICMP_PREC_VIOLATION:
+          return "prec_violation";
+        case ICMP_PREC_CUTOFF:
+          return "prec_cutoff";
+      }
+      break;
+    case ICMP_REDIRECT:
+      switch(code) {
+        case ICMP_REDIR_NET:
+          return "redir_net";
+        case ICMP_REDIR_HOST:
+          return "redir_host";
+        case ICMP_REDIR_NETTOS:
+          return "redir_nettos";
+        case ICMP_REDIR_HOSTTOS:
+          return "redir_hosttos";
+      }
+      break;
+    case ICMP_TIME_EXCEEDED:
+      switch(code) {
+        case ICMP_EXC_TTL:
+          return "exc_ttl";
+        case ICMP_EXC_FRAGTIME:
+          return "exc_fragtime";
+      }
+      break;
+  }
+  return "null";
+
+}
 
 uint16_t icmp_checksum(uint16_t *h, uint32_t l)
 {
@@ -105,7 +242,6 @@ uint16_t icmp_checksum(uint16_t *h, uint32_t l)
   csum += (csum >> 16);
   return (uint16_t)(~csum);
 }
-
 
 void *do_malloc(int len)
 {
@@ -148,14 +284,12 @@ void do_display_graph(struct accounting *s, struct arguments *o, double rtt)
   }
 }
 
-
 void do_display_summary(struct accounting *s)
 {
   //FIXME: display statistics on CTRL+C
   printf("--- statistics ---\n");
-  printf("min rtt=%.1fms; max rtt=%.1fms; avg rtt=%.1fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
+  printf("min rtt=%.2fms; max rtt=%.2fms; avg rtt=%.2fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
 }
-
 
 int do_open_socket(struct arguments *options)
 {
@@ -238,21 +372,26 @@ int do_send_icmp(int socket_fd, struct arguments *options, void *packet)
     printf("error: failed to read icmp packet. errno:%d\n", errno);
     return -1;
   }
+  //FIXME: pass back ip to caller
+  struct sockaddr_in from;
+  socklen_t len = sizeof(from);
   // read response from socket and write to packet_ptr buffer
   memset(packet_ptr, 0, options->icmp_len);
-  rc = recvfrom(socket_fd, packet_ptr, options->icmp_len, MSG_DONTWAIT, NULL, NULL);
+  //rc = recvfrom(socket_fd, packet_ptr, options->icmp_len, MSG_DONTWAIT, NULL, NULL);
+  rc = recvfrom(socket_fd, packet_ptr, options->icmp_len, MSG_DONTWAIT, (struct sockaddr*)&from, &len);
+  IP = inet_ntoa(from.sin_addr);
   memcpy(packet, packet_ptr, options->icmp_len);
   do_free(icmp_hdr_ptr);
   do_free(packet_ptr);
   return rc;
 }
 
-
 int do_main_loop(struct arguments *options)
 {
   double rtt;
   // variables used to compute and store rtt (round trip time) value
   struct timespec tstart, tend;
+  //FIXME: bug with ttl. on some nodes it give high value (e.g. node 123.123.23.23)
   // ttl (up to 256)
   unsigned char ttl;
   // accounting
@@ -297,11 +436,11 @@ int do_main_loop(struct arguments *options)
       memset(icmp_hdr_ptr, 0, icmp_hdr_len);
       // since SOCK_RAW is used - icmp_packet_ptr will hold 20 bytes of ipv4 header (which we need to strip off)
       memcpy(icmp_hdr_ptr, icmp_packet_ptr + 20, icmp_hdr_len);
-      if (icmp_hdr_ptr->type == ICMP_ECHOREPLY) {
-        printf("seq=%d; time=%.1fms; ttl=%d\n", ntohs(icmp_hdr_ptr->un.echo.sequence), rtt, ttl);
-      } else {
-        printf("error: received wrong icmp packet type:%d\n", icmp_hdr_ptr->type);
-      }
+
+      const char *icmp_type = icmp_type_to_string(icmp_hdr_ptr->type);
+      const char *icmp_code = icmp_code_to_string(icmp_hdr_ptr->type, icmp_hdr_ptr->code);
+      short int icmp_sequ = ntohs(icmp_hdr_ptr->un.echo.sequence);
+      printf("src=%s rtt=%.2fms ttl=%d seq=%d type=%s code=%s\n", IP, rtt, ttl, icmp_sequ, icmp_type, icmp_code);
     }
     do_free(icmp_hdr_ptr);
     do_free(icmp_packet_ptr);
@@ -316,14 +455,16 @@ int do_main_loop(struct arguments *options)
       stats.min_ms = rtt;
     }
 
-    // FIXME: convert to nanosleep
-    sleep(options->interval);
+    // don't sleep on last packet ;-)
+    if (options->packets > 1) {
+      // FIXME: convert to nanosleep
+      sleep(options->interval);
+    }
   }
   do_display_summary(&stats);
   close(socket_fd);
   return 0;
 }
-
 
 int main(int argc, char **argv)
 {
@@ -334,10 +475,10 @@ int main(int argc, char **argv)
   // FIXME: rename icmp_idi to something more intuitive
   arguments.icmp_idi = getpid();
   arguments.icmp_payload = "....";
-  arguments.packets = 10;
-  arguments.interval = 1;
-  arguments.timeout = 1;
-  arguments.ttl = 28;
+  arguments.packets = ARGS_DEFAULT_PACKETS;
+  arguments.interval = ARGS_DEFAULT_INTERVAL;
+  arguments.timeout = ARGS_DEFAULT_TIMEOUT;
+  arguments.ttl = ARGS_DEFAULT_TTL;
   arguments.max_rtt = 100;
   arguments.min_rtt = 1;
 
