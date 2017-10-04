@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <argp.h>
+#include <netdb.h>
 
 /*
  * why need to use this:
@@ -55,7 +56,7 @@
 #define ARGS_DEFAULT_ICMP_SEQUENCE 1
 
 const char *argp_program_version = "0.0.5";
-const char *argp_program_bug_address = "<dev@null>";
+const char *argp_program_bug_address = "<в@ноль>";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
   {"count",    'c', "NUM",  0, STR(packets to send (default: ARGS_DEFAULT_PACKETS)), 0},
@@ -64,7 +65,7 @@ static struct argp_option options[] = {
   {"ttl",      'T', "NUM",  0, STR(packet ttl (default: ARGS_DEFAULT_TTL)), 0},
   {0}
 };
-
+//FIXME: IP should be local
 char *IP;
 struct arguments
 {
@@ -74,7 +75,7 @@ struct arguments
   uint32_t      icmp_sequence;
   uint32_t      icmp_len;
   char          *icmp_payload;
-  int           packets;
+  int           count;
   float         interval;
   int           timeout;
   // FIXME: min_ttl, max_ttl
@@ -83,12 +84,41 @@ struct arguments
   double        min_rtt;
 };
 
+int hostname_to_ip(char *node, char *ip)
+{
+  struct addrinfo hints;
+  struct addrinfo *result, *rp;
+  struct sockaddr_in *addr;
+  int rc;
+
+  memset(&hints, 0, sizeof(struct addrinfo));
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
+  hints.ai_flags = AI_PASSIVE;    /* For wildcard IP address */
+  hints.ai_protocol = 0;          /* Any protocol */
+  hints.ai_canonname = NULL;
+  hints.ai_addr = NULL;
+  hints.ai_next = NULL;
+
+  if ((rc = getaddrinfo(node, NULL, &hints, &result)) < 0) {
+    printf("error: getaddrinfo: %s\n", gai_strerror(rc));
+    return -1;
+  }
+  for (rp = result; rp != NULL; rp = rp->ai_next) {
+    addr = (struct sockaddr_in*)result->ai_addr;
+    memcpy(ip, inet_ntoa(addr->sin_addr), 256);
+    freeaddrinfo(result);
+    return 0;
+  }
+    return 0;
+}
+
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
   struct arguments *arguments = state->input;
   switch(key) {
     case 'c':
-      arguments->packets = atoi(arg);
+      arguments->count = atoi(arg);
       break;
     case 'i':
       arguments->interval = atoi(arg);
@@ -281,19 +311,19 @@ void do_display_graph(struct accounting *s, struct arguments *o, double rtt)
   }
   fflush(stdout);
   // jump to next line when - 60 chars were displayed or we displayed char for last packet
-  if (((s->packets != 0) && (s->packets % 60) == 0) || (o->packets == 1)) {
+  if (((s->packets != 0) && (s->packets % 60) == 0) || (o->count == 1)) {
     printf(" - line statistic\n");
   }
 }
 
-void do_display_summary(struct accounting *s)
+void do_display_summary(struct accounting *s, struct arguments *arguments)
 {
   //FIXME: display statistics on CTRL+C
-  printf("--- statistics ---\n");
+  printf("--- ping %s statistics ---\n", arguments->ip);
   printf("min rtt=%.2fms; max rtt=%.2fms; avg rtt=%.2fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
 }
 
-int do_open_socket(struct arguments *options)
+int do_open_socket(struct arguments *arguments)
 {
   int socket_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
   if (socket_fd < 0) {
@@ -301,14 +331,13 @@ int do_open_socket(struct arguments *options)
     return -1;
   }
   // set TTL on IP packet 
-  int rc = setsockopt(socket_fd, IPPROTO_IP, IP_TTL, &options->ttl, sizeof(options->ttl));
+  int rc = setsockopt(socket_fd, IPPROTO_IP, IP_TTL, &arguments->ttl, sizeof(arguments->ttl));
   if (rc != 0) {
     printf("error: failed to set ttl. errno: %d\n", errno);
     return -1;
   }
   return socket_fd;
 }
-
 
 double do_timespec_delta(struct timespec s, struct timespec e)
 {
@@ -323,13 +352,12 @@ double do_timespec_delta(struct timespec s, struct timespec e)
   return ms;
 }
 
-
-int do_send_icmp(int socket_fd, struct arguments *options, void *packet)
+int do_send_icmp(int socket_fd, struct arguments *arguments, void *packet)
 {
   // create ipv4 header
   struct sockaddr_in ip_hdr;
   struct in_addr ip_addr;
-  inet_aton(options->ip, &ip_addr);
+  inet_aton(arguments->ip, &ip_addr);
   memset(&ip_hdr, 0, sizeof(ip_hdr));
   ip_hdr.sin_family = AF_INET;
   ip_hdr.sin_addr = ip_addr;
@@ -341,22 +369,22 @@ int do_send_icmp(int socket_fd, struct arguments *options, void *packet)
   if (icmp_hdr_ptr == NULL) {
     return -1;
   }
-  icmp_hdr_ptr->type = options->icmp_type;
-  icmp_hdr_ptr->un.echo.sequence = htons(options->icmp_sequence++);
-  icmp_hdr_ptr->un.echo.id = htons(options->icmp_idi);
+  icmp_hdr_ptr->type = arguments->icmp_type;
+  icmp_hdr_ptr->un.echo.sequence = htons(arguments->icmp_sequence++);
+  icmp_hdr_ptr->un.echo.id = htons(arguments->icmp_idi);
   icmp_hdr_ptr->checksum = 0;
 
   // create icmp packet (header + payload)
   // packet_ptr is used as icmp packet buffer (sent and recv)
-  char *packet_ptr = do_malloc(options->icmp_len);
+  char *packet_ptr = do_malloc(arguments->icmp_len);
   if (packet_ptr == NULL) {
     return -1;
   }
   // copy icmp header to packet buffer
   memcpy(packet_ptr, icmp_hdr_ptr, icmp_hdr_len);
   // copy icmp payload to packet buffer
-  memcpy(packet_ptr + icmp_hdr_len, options->icmp_payload, strlen(options->icmp_payload));
-  int packet_len = icmp_hdr_len + strlen(options->icmp_payload);
+  memcpy(packet_ptr + icmp_hdr_len, arguments->icmp_payload, strlen(arguments->icmp_payload));
+  int packet_len = icmp_hdr_len + strlen(arguments->icmp_payload);
   uint16_t checksum = icmp_checksum((uint16_t*)packet_ptr, packet_len);
   icmp_hdr_ptr->checksum = checksum;
   // copy icmp header with correct checksum
@@ -365,7 +393,7 @@ int do_send_icmp(int socket_fd, struct arguments *options, void *packet)
   // send packet over wire
   sendto(socket_fd, packet_ptr, packet_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
   // wait for response
-  struct timeval timeout = {options->timeout, 0};
+  struct timeval timeout = {arguments->timeout, 0};
   fd_set read_set;
   FD_ZERO(&read_set);
   FD_SET(socket_fd, &read_set);
@@ -378,22 +406,23 @@ int do_send_icmp(int socket_fd, struct arguments *options, void *packet)
   struct sockaddr_in from;
   socklen_t len = sizeof(from);
   // read response from socket and write to packet_ptr buffer
-  memset(packet_ptr, 0, options->icmp_len);
-  //rc = recvfrom(socket_fd, packet_ptr, options->icmp_len, MSG_DONTWAIT, NULL, NULL);
-  rc = recvfrom(socket_fd, packet_ptr, options->icmp_len, MSG_DONTWAIT, (struct sockaddr*)&from, &len);
+  memset(packet_ptr, 0, arguments->icmp_len);
+  //rc = recvfrom(socket_fd, packet_ptr, arguments->icmp_len, MSG_DONTWAIT, NULL, NULL);
+  rc = recvfrom(socket_fd, packet_ptr, arguments->icmp_len, MSG_DONTWAIT, (struct sockaddr*)&from, &len);
   IP = inet_ntoa(from.sin_addr);
-  memcpy(packet, packet_ptr, options->icmp_len);
+  memcpy(packet, packet_ptr, arguments->icmp_len);
   do_free(icmp_hdr_ptr);
   do_free(packet_ptr);
   return rc;
 }
 
-int do_main_loop(struct arguments *options)
+int do_main_loop(struct arguments *arguments)
 {
+  //FIXME: ./ping -c 123 -t -1 will ignore interval and ping without it
+  //FIXME: ./ping -t 0  - lead to odd results
   double rtt;
   // variables used to compute and store rtt (round trip time) value
   struct timespec tstart, tend;
-  //FIXME: bug with ttl. on some nodes it give high value (e.g. node 123.123.23.23)
   // ttl (up to 256)
   unsigned char ttl;
   // accounting
@@ -402,20 +431,31 @@ int do_main_loop(struct arguments *options)
   stats.tot_ms = 0;
   stats.packets = 0;
 
-  int socket_fd = do_open_socket(options);
-  for (; options->packets != 0; options->packets--) {
+  //FIXME: its buggy, incorrect and need to be rewrited (include hostname_to_ip), but it's works for now!
+  setbuf(stdout, NULL);
+  char ip[256];
+  int rc = hostname_to_ip(arguments->ip, ip);
+  if (rc < 0) {
+    return rc;
+  }
+  //FIXME: there should be arguments->node for user input and arguments->ip for internal use
+  arguments->ip = ip;
+  printf("--- ping %s (ttl=%d count=%d timeout=%d) ---\n", arguments->ip, arguments->ttl, arguments->count, arguments->timeout);
+
+  int socket_fd = do_open_socket(arguments);
+  for (; arguments->count != 0; arguments->count--) {
     int icmp_hdr_len = sizeof(struct icmphdr);
     struct icmphdr *icmp_hdr_ptr = do_malloc(icmp_hdr_len);
     if (icmp_hdr_ptr == NULL) {
       return -1;
     }
-    char *icmp_packet_ptr = do_malloc(sizeof(char) * options->icmp_len);
+    char *icmp_packet_ptr = do_malloc(sizeof(char) * arguments->icmp_len);
     if (icmp_packet_ptr == NULL) {
       return -1;
     }
 
     clock_gettime(CLOCK_REALTIME, &tstart);
-    int rc = do_send_icmp(socket_fd, options, icmp_packet_ptr);
+    int rc = do_send_icmp(socket_fd, arguments, icmp_packet_ptr);
     clock_gettime(CLOCK_REALTIME, &tend);
     if (rc == 0) {
       printf("error: icmp connection was reset. errno:%d\n", errno);
@@ -458,12 +498,12 @@ int do_main_loop(struct arguments *options)
     }
 
     // don't sleep on last packet ;-)
-    if (options->packets > 1) {
+    if (arguments->count > 1) {
       // FIXME: convert to nanosleep
-      sleep(options->interval);
+      sleep(arguments->interval);
     }
   }
-  do_display_summary(&stats);
+  do_display_summary(&stats, arguments);
   close(socket_fd);
   return 0;
 }
@@ -477,7 +517,7 @@ int main(int argc, char **argv)
   // FIXME: rename icmp_idi to something more intuitive
   arguments.icmp_idi = getpid();
   arguments.icmp_payload = "....";
-  arguments.packets = ARGS_DEFAULT_PACKETS;
+  arguments.count = ARGS_DEFAULT_PACKETS;
   arguments.interval = ARGS_DEFAULT_INTERVAL;
   arguments.timeout = ARGS_DEFAULT_TIMEOUT;
   arguments.ttl = ARGS_DEFAULT_TTL;
