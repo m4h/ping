@@ -55,7 +55,7 @@
 #define ARGS_DEFAULT_TTL 32
 #define ARGS_DEFAULT_ICMP_SEQUENCE 1
 
-const char *argp_program_version = "0.0.5";
+const char *argp_program_version = "0.0.6";
 const char *argp_program_bug_address = "<в@ноль>";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
@@ -69,6 +69,7 @@ static struct argp_option options[] = {
 char *IP;
 struct arguments
 {
+  char          *node;          // hostname or ip address
   char          *ip;            // ip address
   uint16_t      icmp_type;
   uint32_t      icmp_idi;
@@ -130,7 +131,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
       arguments->ttl = atoi(arg);
       break;
     case ARGP_KEY_ARG:
-      arguments->ip = arg;
+      arguments->node = arg;
       break;
     case ARGP_KEY_NO_ARGS:
       argp_usage(state);
@@ -319,7 +320,7 @@ void do_display_graph(struct accounting *s, struct arguments *o, double rtt)
 void do_display_summary(struct accounting *s, struct arguments *arguments)
 {
   //FIXME: display statistics on CTRL+C
-  printf("--- ping %s statistics ---\n", arguments->ip);
+  printf("--- ping %s statistics ---\n", arguments->node);
   printf("min rtt=%.2fms; max rtt=%.2fms; avg rtt=%.2fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
 }
 
@@ -434,13 +435,12 @@ int do_main_loop(struct arguments *arguments)
   //FIXME: its buggy, incorrect and need to be rewrited (include hostname_to_ip), but it's works for now!
   setbuf(stdout, NULL);
   char ip[256];
-  int rc = hostname_to_ip(arguments->ip, ip);
+  int rc = hostname_to_ip(arguments->node, ip);
   if (rc < 0) {
     return rc;
   }
-  //FIXME: there should be arguments->node for user input and arguments->ip for internal use
   arguments->ip = ip;
-  printf("--- ping %s (ttl=%d count=%d timeout=%d) ---\n", arguments->ip, arguments->ttl, arguments->count, arguments->timeout);
+  printf("--- ping %s (ttl=%d count=%d timeout=%d) ---\n", arguments->node, arguments->ttl, arguments->count, arguments->timeout);
 
   int socket_fd = do_open_socket(arguments);
   for (; arguments->count != 0; arguments->count--) {
