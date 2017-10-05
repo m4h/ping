@@ -42,15 +42,14 @@
   TODO:
     - convert errno from numeric to word values
     - bring (kore) a webserver and when client connects render a webgraph in live?
-    - DNS to IP; check IP
 */
 
 // how it works - https://www.guyrutenberg.com/2008/12/20/expanding-macros-into-string-constants-in-c/
 #define STR_EXPAND(tok) #tok
 #define STR(tok) STR_EXPAND(tok)
 
-#define ARGS_DEFAULT_PACKETS 10
-#define ARGS_DEFAULT_TIMEOUT 1
+#define ARGS_DEFAULT_PACKETS 15
+#define ARGS_DEFAULT_TIMEOUT 5
 #define ARGS_DEFAULT_INTERVAL 1
 #define ARGS_DEFAULT_TTL 32
 #define ARGS_DEFAULT_ICMP_SEQUENCE 1
@@ -60,8 +59,8 @@ const char *argp_program_bug_address = "<в@ноль>";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
   {"count",    'c', "NUM",  0, STR(packets to send (default: ARGS_DEFAULT_PACKETS)), 0},
-  {"interval", 'i', "SECS", 0, STR(time to wait between packets (default: ARGS_DEFAULT_INTERVAL)), 0},
-  {"timeout",  't', "SECS", 0, STR(time to wait for socket to be ready (select) (default: ARGS_DEFAULT_TIMEOUT)), 0},
+  {"interval", 'i', "SECS", 0, STR(time to wait between packets (default: ARGS_DEFAULT_INTERVAL sec)), 0},
+  {"timeout",  't', "SECS", 0, STR(time to wait for socket to be ready (select) (default: ARGS_DEFAULT_TIMEOUT sec)), 0},
   {"ttl",      'T', "NUM",  0, STR(packet ttl (default: ARGS_DEFAULT_TTL)), 0},
   {0}
 };
@@ -73,6 +72,7 @@ struct arguments
   char          *ip;            // ip address
   uint16_t      icmp_type;
   uint32_t      icmp_idi;
+  //FIXME: icmp_sequence can be negative :(
   uint32_t      icmp_sequence;
   uint32_t      icmp_len;
   char          *icmp_payload;
@@ -109,9 +109,9 @@ int hostname_to_ip(char *node, char *ip)
     addr = (struct sockaddr_in*)result->ai_addr;
     memcpy(ip, inet_ntoa(addr->sin_addr), 256);
     freeaddrinfo(result);
-    return 0;
+    break;
   }
-    return 0;
+  return 0;
 }
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
