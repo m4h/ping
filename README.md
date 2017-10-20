@@ -15,7 +15,7 @@ src=8.8.8.8 rtt=71.12ms ttl=58 seq=1 type=echoreply code=null
 ...
 ```
 
-decrement TTL of a packet to find next hop (router) address (this is how tracert|traceroute|tracepath|mtr works)
+set packet TTL to find next hop (router) address (this is how tracert|traceroute|tracepath|mtr works)
 ```
 ./ping 8.8.8.8 -T 1
 --- ping 8.8.8.8 (ttl=1 count=3 timeout=5) ---
