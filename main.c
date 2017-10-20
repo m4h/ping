@@ -40,6 +40,7 @@
   FIXME: 
     - timeout issue (actually timeout doesn't work as expected)
     - max rtt sometime have too high value
+    - bug with negative sequence (ping -c -1 -i 0 127.0.0.1)
   TODO:
     - convert errno from numeric to word values
     - bring (kore) a webserver and when client connects render a webgraph in live?
@@ -55,8 +56,8 @@
 #define ARGS_DEFAULT_TTL 32
 #define ARGS_DEFAULT_ICMP_SEQUENCE 1
 
-const char *argp_program_version = "0.0.6";
-const char *argp_program_bug_address = "<в@ноль>";
+const char *argp_program_version = "0.0.7";
+const char *argp_program_bug_address = "https://github.com/m4h/ping/issues";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
   {"count",    'c', "NUM",  0, STR(packets to send (default: ARGS_DEFAULT_PACKETS)), 0},
