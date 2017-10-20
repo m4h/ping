@@ -10,6 +10,7 @@
 #include <time.h>
 #include <argp.h>
 #include <netdb.h>
+//#include <signal.h>
 
 /*
  * why need to use this:
@@ -419,6 +420,7 @@ int do_send_icmp(int socket_fd, struct arguments *arguments, void *packet)
 
 int do_main_loop(struct arguments *arguments)
 {
+  //signal(SIGINT, do_display_summary);
   //FIXME: ./ping -c 123 -t -1 will ignore interval and ping without it
   //FIXME: ./ping -t 0  - lead to odd results
   double rtt;
