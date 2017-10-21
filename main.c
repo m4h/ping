@@ -44,6 +44,7 @@
   TODO:
     - convert errno from numeric to word values
     - bring (kore) a webserver and when client connects render a webgraph in live?
+    - add text graph display?
 */
 
 // how it works - https://www.guyrutenberg.com/2008/12/20/expanding-macros-into-string-constants-in-c/
@@ -54,18 +55,28 @@
 #define ARGS_DEFAULT_TIMEOUT 5
 #define ARGS_DEFAULT_INTERVAL 1
 #define ARGS_DEFAULT_TTL 32
+#define ARGS_DEFAULT_ICMP_ID getpid()
+#define ARGS_DEFAULT_ICMP_TYPE ICMP_ECHO
 #define ARGS_DEFAULT_ICMP_SEQUENCE 1
+#define ARGS_DEFAULT_ICMP_LEN 64
+#define ARGS_DEFAULT_ICMP_DATA "..."
 
 const char *argp_program_version = "0.0.7";
 const char *argp_program_bug_address = "https://github.com/m4h/ping/issues";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
-  {"count",    'c', "NUM",  0, STR(packets to send (default: ARGS_DEFAULT_PACKETS)), 0},
-  {"interval", 'i', "SECS", 0, STR(time to wait between packets (default: ARGS_DEFAULT_INTERVAL sec)), 0},
-  {"timeout",  't', "SECS", 0, STR(time to wait for socket to be ready (select) (default: ARGS_DEFAULT_TIMEOUT sec)), 0},
-  {"ttl",      'T', "NUM",  0, STR(packet ttl (default: ARGS_DEFAULT_TTL)), 0},
+  {"count",         'c', "NUM",  0, STR(packets to send (default: ARGS_DEFAULT_PACKETS)), 0},
+  {"interval",      'i', "SECS", 0, STR(time to wait between packets (default: ARGS_DEFAULT_INTERVAL sec)), 0},
+  {"timeout",       't', "SECS", 0, STR(time to wait for socket to be ready (select) (default: ARGS_DEFAULT_TIMEOUT sec)), 0},
+  {"ttl",           'T', "NUM",  0, STR(packet ttl (default: ARGS_DEFAULT_TTL)), 0},
+  {"icmp-type",     '1', "NUM",  0, STR(packet type (default: ARGS_DEFAULT_ICMP_TYPE)), 0},
+  {"icmp-size",     '2', "NUM",  0, STR(packet size (default: ARGS_DEFAULT_ICMP_LEN)), 0},
+  {"icmp-data",     '3', "STR",  0, STR(packet payload (default: ARGS_DEFAULT_ICMP_DATA)), 0},
+  {"icmp-id",       '4', "NUM",  0, STR(sequence identifier (default: getpid())), 0},
+  {"icmp-sequence", '5', "NUM",  0, STR(initial sequence number (default: ARGS_DEFAULT_ICMP_SEQUENCE)), 0},
   {0}
 };
+
 //FIXME: IP should be local
 char *IP;
 struct arguments
@@ -73,11 +84,10 @@ struct arguments
   char          *node;          // hostname or ip address
   char          *ip;            // ip address
   uint16_t      icmp_type;
-  uint32_t      icmp_idi;
-  //FIXME: icmp_sequence can be negative :(
-  uint32_t      icmp_sequence;
   uint32_t      icmp_len;
   char          *icmp_payload;
+  uint32_t      icmp_echo_id;
+  uint32_t      icmp_echo_seq;
   int           count;
   float         interval;
   int           timeout;
@@ -118,22 +128,39 @@ int hostname_to_ip(char *node, char *ip)
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state)
 {
-  struct arguments *arguments = state->input;
+  struct arguments *args = state->input;
   switch(key) {
     case 'c':
-      arguments->count = atoi(arg);
+      args->count = atoi(arg);
       break;
     case 'i':
-      arguments->interval = atoi(arg);
+      args->interval = atoi(arg);
       break;
     case 't':
-      arguments->timeout = atoi(arg);
+      args->timeout = atoi(arg);
       break;
     case 'T':
-      arguments->ttl = atoi(arg);
+      args->ttl = atoi(arg);
+      break;
+    case '1':
+      args->icmp_type = atoi(arg);
+      break;
+    case '2':
+      args->icmp_len = atoi(arg);
+      break;
+    /* FIXME: complete copy
+    case '3':
+      args->icmp_payload = arg;
+      break;
+    */
+    case '4':
+      args->icmp_echo_id = atoi(arg);
+      break;
+    case '5':
+      args->icmp_echo_seq = atoi(arg);
       break;
     case ARGP_KEY_ARG:
-      arguments->node = arg;
+      args->node = arg;
       break;
     case ARGP_KEY_NO_ARGS:
       argp_usage(state);
@@ -297,28 +324,6 @@ void do_free(void *ptr)
   }
 }
 
-void do_display_graph(struct accounting *s, struct arguments *o, double rtt)
-{
-  if (s->packets == 1) {
-    printf("--- rtt based graph: '!' is more than %.fms; '-' is less than %.fms; 't' is timeout (%ds) ---\n", o->max_rtt, o->min_rtt, o->timeout);
-  }
-  //FIXME: account max_rtt and min_rtt
-  if (rtt == -1) {
-    printf("t");
-  } else if (rtt > o->max_rtt) {
-    printf("!");
-  } else if (rtt < o->min_rtt) {
-    printf("-");
-  } else {
-    printf(".");
-  }
-  fflush(stdout);
-  // jump to next line when - 60 chars were displayed or we displayed char for last packet
-  if (((s->packets != 0) && (s->packets % 60) == 0) || (o->count == 1)) {
-    printf(" - line statistic\n");
-  }
-}
-
 void do_display_summary(struct accounting *s, struct arguments *arguments)
 {
   //FIXME: display statistics on CTRL+C
@@ -355,12 +360,12 @@ double do_timespec_delta(struct timespec s, struct timespec e)
   return ms;
 }
 
-int do_send_icmp(int socket_fd, struct arguments *arguments, void *packet)
+int do_send_icmp(int socket_fd, struct arguments *args, void *packet)
 {
   // create ipv4 header
   struct sockaddr_in ip_hdr;
   struct in_addr ip_addr;
-  inet_aton(arguments->ip, &ip_addr);
+  inet_aton(args->ip, &ip_addr);
   memset(&ip_hdr, 0, sizeof(ip_hdr));
   ip_hdr.sin_family = AF_INET;
   ip_hdr.sin_addr = ip_addr;
@@ -372,22 +377,23 @@ int do_send_icmp(int socket_fd, struct arguments *arguments, void *packet)
   if (icmp_hdr_ptr == NULL) {
     return -1;
   }
-  icmp_hdr_ptr->type = arguments->icmp_type;
-  icmp_hdr_ptr->un.echo.sequence = htons(arguments->icmp_sequence++);
-  icmp_hdr_ptr->un.echo.id = htons(arguments->icmp_idi);
+  //FIXME: add support for other icmp types
+  icmp_hdr_ptr->type = args->icmp_type;
+  icmp_hdr_ptr->un.echo.sequence = htons(args->icmp_echo_seq++);
+  icmp_hdr_ptr->un.echo.id = htons(args->icmp_echo_id);
   icmp_hdr_ptr->checksum = 0;
 
   // create icmp packet (header + payload)
   // packet_ptr is used as icmp packet buffer (sent and recv)
-  char *packet_ptr = do_malloc(arguments->icmp_len);
+  char *packet_ptr = do_malloc(args->icmp_len);
   if (packet_ptr == NULL) {
     return -1;
   }
   // copy icmp header to packet buffer
   memcpy(packet_ptr, icmp_hdr_ptr, icmp_hdr_len);
   // copy icmp payload to packet buffer
-  memcpy(packet_ptr + icmp_hdr_len, arguments->icmp_payload, strlen(arguments->icmp_payload));
-  int packet_len = icmp_hdr_len + strlen(arguments->icmp_payload);
+  memcpy(packet_ptr + icmp_hdr_len, args->icmp_payload, strlen(args->icmp_payload));
+  int packet_len = icmp_hdr_len + strlen(args->icmp_payload);
   uint16_t checksum = icmp_checksum((uint16_t*)packet_ptr, packet_len);
   icmp_hdr_ptr->checksum = checksum;
   // copy icmp header with correct checksum
@@ -396,7 +402,7 @@ int do_send_icmp(int socket_fd, struct arguments *arguments, void *packet)
   // send packet over wire
   sendto(socket_fd, packet_ptr, packet_len, 0, (struct sockaddr*)&ip_hdr, sizeof(ip_hdr));
   // wait for response
-  struct timeval timeout = {arguments->timeout, 0};
+  struct timeval timeout = {args->timeout, 0};
   fd_set read_set;
   FD_ZERO(&read_set);
   FD_SET(socket_fd, &read_set);
@@ -409,17 +415,16 @@ int do_send_icmp(int socket_fd, struct arguments *arguments, void *packet)
   struct sockaddr_in from;
   socklen_t len = sizeof(from);
   // read response from socket and write to packet_ptr buffer
-  memset(packet_ptr, 0, arguments->icmp_len);
-  //rc = recvfrom(socket_fd, packet_ptr, arguments->icmp_len, MSG_DONTWAIT, NULL, NULL);
-  rc = recvfrom(socket_fd, packet_ptr, arguments->icmp_len, MSG_DONTWAIT, (struct sockaddr*)&from, &len);
+  memset(packet_ptr, 0, args->icmp_len);
+  rc = recvfrom(socket_fd, packet_ptr, args->icmp_len, MSG_DONTWAIT, (struct sockaddr*)&from, &len);
   IP = inet_ntoa(from.sin_addr);
-  memcpy(packet, packet_ptr, arguments->icmp_len);
+  memcpy(packet, packet_ptr, args->icmp_len);
   do_free(icmp_hdr_ptr);
   do_free(packet_ptr);
   return rc;
 }
 
-int do_main_loop(struct arguments *arguments)
+int do_main_loop(struct arguments *args)
 {
   //signal(SIGINT, do_display_summary);
   //FIXME: ./ping -c 123 -t -1 will ignore interval and ping without it
@@ -436,29 +441,30 @@ int do_main_loop(struct arguments *arguments)
   stats.packets = 0;
 
   //FIXME: its buggy, incorrect and need to be rewrited (include hostname_to_ip), but it's works for now!
+  // unbuffer stdout to display progress immediately
   setbuf(stdout, NULL);
   char ip[256];
-  int rc = hostname_to_ip(arguments->node, ip);
+  int rc = hostname_to_ip(args->node, ip);
   if (rc < 0) {
     return rc;
   }
-  arguments->ip = ip;
-  printf("--- ping %s (ttl=%d count=%d timeout=%d) ---\n", arguments->node, arguments->ttl, arguments->count, arguments->timeout);
+  args->ip = ip;
+  printf("--- ping %s (ttl=%d count=%d timeout=%d) ---\n", args->node, args->ttl, args->count, args->timeout);
 
-  int socket_fd = do_open_socket(arguments);
-  for (; arguments->count != 0; arguments->count--) {
+  int socket_fd = do_open_socket(args);
+  for (; args->count != 0; args->count--) {
     int icmp_hdr_len = sizeof(struct icmphdr);
     struct icmphdr *icmp_hdr_ptr = do_malloc(icmp_hdr_len);
     if (icmp_hdr_ptr == NULL) {
       return -1;
     }
-    char *icmp_packet_ptr = do_malloc(sizeof(char) * arguments->icmp_len);
+    char *icmp_packet_ptr = do_malloc(sizeof(char) * args->icmp_len);
     if (icmp_packet_ptr == NULL) {
       return -1;
     }
 
     clock_gettime(CLOCK_REALTIME, &tstart);
-    int rc = do_send_icmp(socket_fd, arguments, icmp_packet_ptr);
+    int rc = do_send_icmp(socket_fd, args, icmp_packet_ptr);
     clock_gettime(CLOCK_REALTIME, &tend);
     if (rc == 0) {
       printf("error: icmp connection was reset. errno:%d\n", errno);
@@ -501,34 +507,32 @@ int do_main_loop(struct arguments *arguments)
     }
 
     // don't sleep on last packet ;-)
-    if (arguments->count > 1) {
+    if (args->count > 1) {
       // FIXME: convert to nanosleep
-      sleep(arguments->interval);
+      sleep(args->interval);
     }
   }
-  do_display_summary(&stats, arguments);
+  do_display_summary(&stats, args);
   close(socket_fd);
   return 0;
 }
 
 int main(int argc, char **argv)
 {
-  struct arguments arguments;
-  arguments.icmp_type = ICMP_ECHO;
-  arguments.icmp_len = 4096;
-  arguments.icmp_sequence = ARGS_DEFAULT_ICMP_SEQUENCE;
-  // FIXME: rename icmp_idi to something more intuitive
-  arguments.icmp_idi = getpid();
-  arguments.icmp_payload = "....";
-  arguments.count = ARGS_DEFAULT_PACKETS;
-  arguments.interval = ARGS_DEFAULT_INTERVAL;
-  arguments.timeout = ARGS_DEFAULT_TIMEOUT;
-  arguments.ttl = ARGS_DEFAULT_TTL;
-  arguments.max_rtt = 100;
-  arguments.min_rtt = 1;
+  struct arguments args;
+  args.icmp_echo_id = ARGS_DEFAULT_ICMP_ID;
+  args.icmp_type = ARGS_DEFAULT_ICMP_TYPE;
+  args.icmp_echo_seq = ARGS_DEFAULT_ICMP_SEQUENCE;
+  args.icmp_len = ARGS_DEFAULT_ICMP_LEN;
+  args.icmp_payload = "....";
+  args.count = ARGS_DEFAULT_PACKETS;
+  args.interval = ARGS_DEFAULT_INTERVAL;
+  args.timeout = ARGS_DEFAULT_TIMEOUT;
+  args.ttl = ARGS_DEFAULT_TTL;
+  args.max_rtt = 100;
+  args.min_rtt = 1;
 
-  argp_parse(&argp, argc, argv, 0, 0, &arguments);
-
-  int rc = do_main_loop(&arguments);
+  argp_parse(&argp, argc, argv, 0, 0, &args);
+  int rc = do_main_loop(&args);
   return rc;
 }
