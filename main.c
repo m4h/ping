@@ -378,8 +378,26 @@ int do_send_icmp(int socket_fd, struct arguments *args, void *packet)
     return -1;
   }
   //FIXME: add support for other icmp types
-  icmp_hdr_ptr->type = args->icmp_type;
-  icmp_hdr_ptr->un.echo.sequence = htons(args->icmp_echo_seq++);
+  switch(args->icmp_type) {
+    case ICMP_ECHOREPLY:
+      icmp_hdr_ptr->type = ICMP_ECHOREPLY;
+      break;
+    case ICMP_DEST_UNREACH:
+      icmp_hdr_ptr->type = ICMP_DEST_UNREACH;
+      break;
+    case ICMP_ECHO:
+      icmp_hdr_ptr->type = ICMP_ECHO;
+      icmp_hdr_ptr->un.echo.sequence = htons(args->icmp_echo_seq++);
+      break;
+    case ICMP_TIMESTAMP:
+      icmp_hdr_ptr->type = ICMP_TIMESTAMP;
+      icmp_hdr_ptr->un.echo.sequence = htons(args->icmp_echo_seq++);
+      break;
+    default:
+      printf("error: invalid icmp type: %d\n", args->icmp_type);
+      //FIXME: exit on incorrect icmp type
+      return -1;
+  }
   icmp_hdr_ptr->un.echo.id = htons(args->icmp_echo_id);
   icmp_hdr_ptr->checksum = 0;
 
@@ -524,7 +542,7 @@ int main(int argc, char **argv)
   args.icmp_type = ARGS_DEFAULT_ICMP_TYPE;
   args.icmp_echo_seq = ARGS_DEFAULT_ICMP_SEQUENCE;
   args.icmp_len = ARGS_DEFAULT_ICMP_LEN;
-  args.icmp_payload = "....";
+  args.icmp_payload = ARGS_DEFAULT_ICMP_DATA;
   args.count = ARGS_DEFAULT_PACKETS;
   args.interval = ARGS_DEFAULT_INTERVAL;
   args.timeout = ARGS_DEFAULT_TIMEOUT;
