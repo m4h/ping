@@ -393,6 +393,9 @@ int do_send_icmp(int socket_fd, struct arguments *args, void *packet)
       icmp_hdr_ptr->type = ICMP_TIMESTAMP;
       icmp_hdr_ptr->un.echo.sequence = htons(args->icmp_echo_seq++);
       break;
+    case ICMP_ADDRESS:
+      icmp_hdr_ptr->type = ICMP_ADDRESS;
+      break;
     default:
       printf("error: invalid icmp type: %d\n", args->icmp_type);
       //FIXME: exit on incorrect icmp type
