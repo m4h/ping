@@ -39,7 +39,6 @@
 
   FIXME: 
     - timeout issue (actually timeout doesn't work as expected)
-    - max rtt sometime have too high value
     - bug with negative sequence (ping -c -1 -i 0 127.0.0.1)
   TODO:
     - convert errno from numeric to word values
@@ -61,7 +60,7 @@
 #define ARGS_DEFAULT_ICMP_LEN 64
 #define ARGS_DEFAULT_ICMP_DATA "..."
 
-const char *argp_program_version = "0.0.7";
+const char *argp_program_version = "0.0.8";
 const char *argp_program_bug_address = "https://github.com/m4h/ping/issues";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
@@ -457,7 +456,8 @@ int do_main_loop(struct arguments *args)
   unsigned char ttl;
   // accounting
   struct accounting stats;
-  stats.min_ms = 65536;
+  stats.max_ms = 65536;
+  stats.min_ms = 0;
   stats.tot_ms = 0;
   stats.packets = 0;
 
