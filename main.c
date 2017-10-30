@@ -537,10 +537,11 @@ int do_main_loop(struct arguments *args)
     }
 
     // don't sleep on last packet ;-)
-    if (args->count > 1) {
-      // FIXME: convert to nanosleep
-      sleep(args->interval);
+    if (args->count == 1) {
+      break;
     }
+    // FIXME: convert to nanosleep
+    sleep(args->interval);
   }
   do_display_summary(SIGINT);
   close(socket_fd);
