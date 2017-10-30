@@ -10,7 +10,7 @@
 #include <time.h>
 #include <argp.h>
 #include <netdb.h>
-//#include <signal.h>
+#include <signal.h>
 
 /*
  * why need to use this:
@@ -60,8 +60,8 @@
 #define ARGS_DEFAULT_ICMP_LEN 64
 #define ARGS_DEFAULT_ICMP_DATA "..."
 
-const char *argp_program_version = "0.0.8";
-const char *argp_program_bug_address = "https://github.com/m4h/ping/issues";
+const char *argp_program_version = "0.0.9";
+const char *argp_program_bug_address = "https://github.com/m4h/ping/issues ._";
 static char args_doc[] = "DESTINATION";
 static struct argp_option options[] = {
   {"count",         'c', "NUM",  0, STR(packets to send (default: ARGS_DEFAULT_PACKETS)), 0},
@@ -78,6 +78,13 @@ static struct argp_option options[] = {
 
 //FIXME: IP should be local
 char *IP;
+
+// account rtt, packets and other stuff
+struct accounting ACCOUNTING;
+
+// node is original (before DNS resolution) hostname/ip we are pinging
+char *NODE;
+
 struct arguments
 {
   char          *node;          // hostname or ip address
@@ -323,11 +330,13 @@ void do_free(void *ptr)
   }
 }
 
-void do_display_summary(struct accounting *s, struct arguments *arguments)
+void do_display_summary(int signo)
 {
-  //FIXME: display statistics on CTRL+C
-  printf("--- ping %s statistics ---\n", arguments->node);
-  printf("min rtt=%.2fms; max rtt=%.2fms; avg rtt=%.2fms\n", s->min_ms, s->max_ms, (s->tot_ms/s->packets));
+  if (signo == SIGINT) {
+    printf("--- ping %s statistics ---\n", NODE);
+    printf("min rtt=%.2fms; max rtt=%.2fms; avg rtt=%.2fms\n", ACCOUNTING.min_ms, ACCOUNTING.max_ms, (ACCOUNTING.tot_ms/ACCOUNTING.packets));
+    exit(0);
+  }
 }
 
 int do_open_socket(struct arguments *arguments)
@@ -446,7 +455,6 @@ int do_send_icmp(int socket_fd, struct arguments *args, void *packet)
 
 int do_main_loop(struct arguments *args)
 {
-  //signal(SIGINT, do_display_summary);
   //FIXME: ./ping -c 123 -t -1 will ignore interval and ping without it
   //FIXME: ./ping -t 0  - lead to odd results
   double rtt;
@@ -455,11 +463,12 @@ int do_main_loop(struct arguments *args)
   // ttl (up to 256)
   unsigned char ttl;
   // accounting
-  struct accounting stats;
-  stats.max_ms = 65536;
-  stats.min_ms = 0;
-  stats.tot_ms = 0;
-  stats.packets = 0;
+  ACCOUNTING.max_ms = 65536;
+  ACCOUNTING.min_ms = 0;
+  ACCOUNTING.tot_ms = 0;
+  ACCOUNTING.packets = 0;
+  NODE = args->node;
+  signal(SIGINT, do_display_summary);
 
   //FIXME: its buggy, incorrect and need to be rewrited (include hostname_to_ip), but it's works for now!
   // unbuffer stdout to display progress immediately
@@ -518,13 +527,13 @@ int do_main_loop(struct arguments *args)
     do_free(icmp_packet_ptr);
     
     // account statistic
-    stats.packets++;
-    stats.tot_ms += rtt;
-    if (rtt > stats.max_ms) {
-      stats.max_ms = rtt;
+    ACCOUNTING.packets++;
+    ACCOUNTING.tot_ms += rtt;
+    if (rtt > ACCOUNTING.max_ms) {
+      ACCOUNTING.max_ms = rtt;
     }
-    if (rtt < stats.min_ms) {
-      stats.min_ms = rtt;
+    if (rtt < ACCOUNTING.min_ms) {
+      ACCOUNTING.min_ms = rtt;
     }
 
     // don't sleep on last packet ;-)
@@ -533,7 +542,7 @@ int do_main_loop(struct arguments *args)
       sleep(args->interval);
     }
   }
-  do_display_summary(&stats, args);
+  do_display_summary(SIGINT);
   close(socket_fd);
   return 0;
 }
