@@ -27,8 +27,7 @@ min rtt=3.47ms; max rtt=3.51ms; avg rtt=3.49ms; sent=3; recv=3; lost=0
 ```
 an example of tracing route path to 5.255.255.60 (yandex.ru)
 ```
-┌─t0m@BOX [ping]
-└──> $ for x in {1..16};do echo $x - $(./ping 5.255.255.60 -T ${x} -c 1 -t 3 | grep -Eo "src=\S+" | sed 's/src=//g');done
+for x in {1..16};do echo $x - $(./ping 5.255.255.60 -T ${x} -c 1 -t 3 | grep -Eo "src=\S+" | sed 's/src=//g');done
 1 - 192.168.10.1
 2 - 
 3 - 
