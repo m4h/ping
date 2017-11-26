@@ -33,6 +33,13 @@
     src=10.1.0.1 rtt=16.13ms ttl=64 seq=32767 type=echoreply code=null
     src=10.1.0.1 rtt=3.45ms ttl=64 seq=-32768 type=echoreply code=null
   FIXME: set identation to 4 spaces
+  FIXME: something happens with rtt calculation and seq :|. maybe packets arrive out of order?
+    └──> $ ./ping google.com -c -1
+    --- ping google.com (216.58.212.238) ttl=32; count=-1; timeout=5s ---
+    error: icmp connection timeout. errno:11
+    src=216.58.212.238 rtt=72.13ms ttl=53 seq=2 type=echoreply code=null
+    src=216.58.212.238 rtt=71.84ms ttl=53 seq=3 type=echoreply code=null
+    src=216.58.212.238 rtt=0.11ms ttl=53 seq=1 type=echoreply code=null
 */
 
 // how it works - https://www.guyrutenberg.com/2008/12/20/expanding-macros-into-string-constants-in-c/
